@@ -1,0 +1,22 @@
+--- a/packages/core/system-prompt/src/index.ts
++++ b/packages/core/system-prompt/src/index.ts
+@@ -303,6 +303,10 @@
+   return joinContextSections(renderContextSections(assembly))
+ }
+ 
++/** The fixed first line of the runtime-context snapshot; the agent loop stamps its
++ * emission time right after this line so a snapshot can be dated without changing the header. */
++export const RUNTIME_CONTEXT_HEADER = 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.'
++
+ /**
+  * The model-facing snapshot text for an already-rendered section list.
+  *
+@@ -314,7 +318,7 @@
+ export function joinContextSections(sections: readonly ContextSnapshotSection[]): string {
+   const body = sections.map(section => section.text).join('\n\n')
+   if (body.length === 0) return ''
+-  return `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${body}`
++  return `${RUNTIME_CONTEXT_HEADER}\n\n${body}`
+ }
+ 
+ /**

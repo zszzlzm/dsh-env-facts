@@ -1,0 +1,78 @@
+--- a/packages/core/agent-loop/src/runtime-context.ts
++++ b/packages/core/agent-loop/src/runtime-context.ts
+@@ -9,6 +9,7 @@
+ import type { ContextFormed, ContextSnapshotSection, Message } from '@deepseek-ai/dsh-llm'
+ import type { Session, SessionEvent, SessionSeq, SurfaceIntent, SystemMessage, UserMessage } from '@deepseek-ai/dsh-session'
+ import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session'
++import { RUNTIME_CONTEXT_HEADER } from '@deepseek-ai/dsh-system-prompt'
+ import type { Context } from '@deepseek-ai/cordis'
+ declare module '@deepseek-ai/dsh-llm' {
+   interface MessageSourceMap {
+@@ -18,6 +19,22 @@
+ 
+ const SOURCE = 'runtime-context'
+ const CLEARED = 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
++
++/** Insert the emission time after the snapshot header, leaving header and body untouched. */
++function stampSnapshot(snapshot: string): string {
++  if (!snapshot.startsWith(RUNTIME_CONTEXT_HEADER)) return snapshot
++  const stamped = `${RUNTIME_CONTEXT_HEADER}\nAs of ${new Date().toISOString()}`
++  return stamped + snapshot.slice(RUNTIME_CONTEXT_HEADER.length)
++}
++
++/** Remove the stamp again, so dedupe compares the snapshot body rather than its emission time. */
++function stripSnapshotStamp(snapshot: string | undefined): string | undefined {
++  if (snapshot === undefined) return undefined
++  const head = `${RUNTIME_CONTEXT_HEADER}\nAs of `
++  if (!snapshot.startsWith(head)) return snapshot
++  const lineEnd = snapshot.indexOf('\n', head.length)
++  return lineEnd < 0 ? snapshot : RUNTIME_CONTEXT_HEADER + snapshot.slice(lineEnd)
++}
+ 
+ function isOwned(message: UserMessage): boolean {
+   return message.source.kind === SOURCE
+@@ -113,7 +130,7 @@
+ /** Tracks the last retained runtime-context snapshot without owning its commit. */
+ export class RuntimeContextProjection {
+   /** `undefined` means no snapshot ever existed; `null` means none is retained. */
+-  private retained: { seq: SessionSeq; text: string | undefined } | null | undefined
++  private retained: { seq: SessionSeq; text: string | undefined; body: string | undefined } | null | undefined
+ 
+   /**
+    * Restore projection state once, then follow authoritative session events.
+@@ -126,7 +143,8 @@
+       if (event.type !== 'user/message' || !isOwned(event.data)) continue
+       this.retained ??= null
+       if (surface.has(event.seq)) {
+-        this.retained = { seq: event.seq, text: textOf(event.data) }
++        const text = textOf(event.data)
++        this.retained = { seq: event.seq, text, body: stripSnapshotStamp(text) }
+         break
+       }
+     }
+@@ -134,7 +152,8 @@
+     ctx.on('session/event', (subject, event) => {
+       if (subject !== session) return
+       if (event.type === 'user/message' && isOwned(event.data)) {
+-        this.retained = { seq: event.seq, text: textOf(event.data) }
++        const text = textOf(event.data)
++        this.retained = { seq: event.seq, text, body: stripSnapshotStamp(text) }
+       } else if (this.retained
+         && isReplacementSurfaceEvent(event)
+         && event.sourceEventSeqs?.includes(this.retained.seq) === true) {
+@@ -151,10 +170,12 @@
+    */
+   project(current: string, sections: readonly ContextSnapshotSection[]): UserMessage | undefined {
+     if (this.retained === undefined && current.length === 0) return
+-    const snapshot = current.length === 0 ? CLEARED : current
+-    if (this.retained?.text === snapshot) return
++    // Compare the body only: the emission time must not make an unchanged snapshot look new.
++    const body = current.length === 0 ? CLEARED : current
++    if (this.retained?.body === body) return
++    const text = current.length === 0 ? CLEARED : stampSnapshot(current)
+     return createUserMessage({
+-      content: [{ type: 'text', text: snapshot }],
++      content: [{ type: 'text', text }],
+       // The cleared marker has no contributions left to attribute.
+       source: sections.length === 0
+         ? { kind: SOURCE }
